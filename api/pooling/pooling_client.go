@@ -17,6 +17,36 @@ type PoolClient struct {
 	rateLimiter  <-chan time.Time
 }
 
+// NewPoolClient returns a *PoolClient that wraps an *http.Client and sets the
+// maximum pool size as well as the requests per second as integers.
+func NewPoolClient(stdClient http.Client, maxPoolSize int, reqPerSec int, timeout time.Duration) *PoolClient {
+	var semaphore chan int = nil
+	if maxPoolSize > 0 {
+		semaphore = make(chan int, maxPoolSize) // Buffered channel to act as a semaphore
+	}
+
+	var emitter <-chan time.Time = nil
+	if reqPerSec > 0 {
+		emitter = time.NewTicker(time.Second / time.Duration(reqPerSec)).C // x req/s == 1s/x req (inverse)
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 5
+	transport.MaxIdleConnsPerHost = 5
+	transport.MaxConnsPerHost = 10
+
+	stdClient.Transport = transport
+	stdClient.Timeout = timeout
+
+	return &PoolClient{
+		client:       stdClient,
+		maxPoolSize:  maxPoolSize,
+		cSemaphore:   semaphore,
+		reqPerSecond: reqPerSec,
+		rateLimiter:  emitter,
+	}
+}
+
 // Do 'overloads' the http.Client Do method
 func (c *PoolClient) Do(req *http.Request) (*http.Response, error) {
 	return c.DoPool(req)
